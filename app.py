@@ -1,103 +1,78 @@
-import os
-import logging
-from contextlib import suppress
+from fastapi import Form, UploadFile, File
+from aiogram.exceptions import TelegramBadRequest
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+CHANNEL = "@dominusfire"  # КУДА шлём анкету
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Update, Message, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.exceptions import TelegramForbiddenError
+def _safe(v):  # небольшая утилита для «нет данных»
+    return v if (v and str(v).strip()) else "—"
 
-# ── конфиг ─────────────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "super_secret_dominus")
+@app.post("/submit")
+async def submit_form(
+    full_name: str = Form(...),
+    dob_date: str = Form(""),
+    phone: str = Form(""),
+    telegram: str = Form(""),
+    address: str = Form(""),
+    passport_registration: str = Form(""),
+    passport_number: str = Form(""),
+    passport_issuer: str = Form(""),
+    education: str = Form(""),
+    experience: str = Form(""),
+    skills: str = Form(""),
+    why_us: str = Form(""),
+    mon_status: str = Form(""), mon_hours: str = Form(""), mon_reason: str = Form(""),
+    tue_status: str = Form(""), tue_hours: str = Form(""), tue_reason: str = Form(""),
+    wed_status: str = Form(""), wed_hours: str = Form(""), wed_reason: str = Form(""),
+    thu_status: str = Form(""), thu_hours: str = Form(""), thu_reason: str = Form(""),
+    fri_status: str = Form(""), fri_hours: str = Form(""), fri_reason: str = Form(""),
+    sat_status: str = Form(""), sat_hours: str = Form(""), sat_reason: str = Form(""),
+    sun_status: str = Form(""), sun_hours: str = Form(""), sun_reason: str = Form(""),
+    photo: UploadFile = File(None),
+):
+    # собираем текст
+    schedule = (
+        f"Пн: {mon_status or '—'} {mon_hours or ''} ({mon_reason or '—'})\n"
+        f"Вт: {tue_status or '—'} {tue_hours or ''} ({tue_reason or '—'})\n"
+        f"Ср: {wed_status or '—'} {wed_hours or ''} ({wed_reason or '—'})\n"
+        f"Чт: {thu_status or '—'} {thu_hours or ''} ({thu_reason or '—'})\n"
+        f"Пт: {fri_status or '—'} {fri_hours or ''} ({fri_reason or '—'})\n"
+        f"Сб: {sat_status or '—'} {sat_hours or ''} ({sat_reason or '—'})\n"
+        f"Вс: {sun_status or '—'} {sun_hours or ''} ({sun_reason or '—'})"
+    )
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
+    text = (
+        "📋 <b>Новая анкета кандидата</b>\n\n"
+        f"👤 ФИО: {_safe(full_name)}\n"
+        f"🎂 Дата рождения: {_safe(dob_date)}\n"
+        f"📞 Телефон: {_safe(phone)}\n"
+        f"💬 Telegram: {_safe(telegram)}\n"
+        f"🏠 Адрес проживания: {_safe(address)}\n"
+        f"🏷️ Прописка (из паспорта): {_safe(passport_registration)}\n"
+        f"🪪 Паспорт: {_safe(passport_number)}\n"
+        f"🏢 Кем выдан: {_safe(passport_issuer)}\n"
+        f"🎓 Образование: {_safe(education)}\n"
+        f"🛠 Навыки: {_safe(skills)}\n"
+        f"💼 Опыт: {_safe(experience)}\n"
+        f"✨ Почему к нам: {_safe(why_us)}\n\n"
+        f"🗓 <b>График по дням</b>:\n{schedule}"
+    )
 
-WEBHOOK_PATH = f"/webhook/{WEBHOOK_SECRET}"
-WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}" if BASE_URL else None
-
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("bot")
-
-bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp = Dispatcher()
-app = FastAPI()
-
-
-# ── handlers ───────────────────────────────────────────────────
-@dp.message(CommandStart())
-async def start_cmd(m: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть меню", callback_data="menu")]
-    ])
-    text = "👋 Привет! Бот подключён через webhook.\nНажми кнопку ниже или введи /menu."
-    with suppress(TelegramForbiddenError):
-        await m.answer(text, reply_markup=kb)
-
-@dp.message(Command("menu"))
-async def menu_cmd(m: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Анкеты: новые (0)", callback_data="new")],
-        [InlineKeyboardButton(text="Анкеты: принятые (0)", callback_data="accepted")],
-    ])
-    with suppress(TelegramForbiddenError):
-        await m.answer("Главное меню:", reply_markup=kb)
-
-@dp.callback_query(F.data == "menu")
-async def cb_menu(c):
-    await menu_cmd(c.message)
-    with suppress(TelegramForbiddenError):
-        await c.answer()
-
-# Заглушка (НЕ эхо)
-@dp.message()
-async def fallback(m: Message):
-    with suppress(TelegramForbiddenError):
-        await m.answer("Не понял команду. Попробуй /menu.")
-
-# ── FastAPI endpoints ──────────────────────────────────────────
-@app.get("/healthz")
-async def healthz():
-    return {"ok": True, "webhook": WEBHOOK_URL or "not-set"}
-
-@app.post(WEBHOOK_PATH)
-async def telegram_webhook(request: Request):
+    # шлём в канал; если есть фото — отправим фото + подпись, иначе текст
     try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        if photo is not None:
+            content = await photo.read()
+            await bot.send_photo(
+                CHANNEL,
+                photo=content,
+                caption=text,
+                parse_mode="HTML"
+            )
+        else:
+            await bot.send_message(CHANNEL, text, parse_mode="HTML")
+    except (TelegramBadRequest, TelegramForbiddenError) as e:
+        # чаще всего: бот не добавлен в канал или нет прав
+        return {"ok": False, "error": f"telegram_error: {e}"}
+    except Exception as e:
+        return {"ok": False, "error": f"server_error: {e}"}
 
-    update = Update.model_validate(payload, strict=False)
-    await dp.feed_update(bot, update)
-    return JSONResponse({"ok": True})
-
-# Удобная ручка для ручной установки вебхука (без токена):
-# GET /set-webhook  — если BASE_URL задан, выставит вебхук.
-@app.get("/set-webhook")
-async def set_webhook_manual():
-    if not WEBHOOK_URL:
-        raise HTTPException(400, "BASE_URL is empty; set it in environment")
-    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True, allowed_updates=dp.resolve_used_update_types())
-    return {"ok": True, "url": WEBHOOK_URL}
-
-# ── lifecycle ──────────────────────────────────────────────────
-@app.on_event("startup")
-async def on_startup():
-    if WEBHOOK_URL:
-        log.info("Setting webhook to %s", WEBHOOK_URL)
-        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True, allowed_updates=dp.resolve_used_update_types())
-    else:
-        log.warning("BASE_URL is empty — webhook will not be set.")
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    with suppress(Exception):
-        await bot.delete_webhook(drop_pending_updates=False)
-    with suppress(Exception):
-        await bot.session.close()
+    return {"ok": True}
