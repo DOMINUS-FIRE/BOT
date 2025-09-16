@@ -1,86 +1,50 @@
-# app.py — aiogram 3.7 + FastAPI webhook для Render
-
 import os
 import asyncio
+import logging
+from contextlib import suppress
+
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, PlainTextResponse
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.client.bot import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
-from aiogram.types import Update, Message
-import httpx
+from fastapi.responses import JSONResponse
 
-# ── настройки из окружения ───────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import CommandStart, Command
+from aiogram.types import Update, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramForbiddenError
+
+# ─────────────────────────────────────────────────────────────
+# Конфиг из переменных окружения Render
+# ─────────────────────────────────────────────────────────────
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+BASE_URL  = os.environ.get("BASE_URL", "").rstrip("/")      # напр. https://ваш-сервис.onrender.com
+SECRET    = os.environ.get("WEBHOOK_SECRET", "super_secret_dominus")
+
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
+    raise RuntimeError("BOT_TOKEN не задан в переменных окружения")
 
-# Секрет для вебхука (чтобы апдейты принимались только по «секретному» URL)
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "super-secret-path")
+WEBHOOK_PATH = f"/webhook/{SECRET}"
+WEBHOOK_URL  = f"{BASE_URL}{WEBHOOK_PATH}" if BASE_URL else None
 
-# Render сам кладёт публичный адрес сюда. На локали можно задать вручную.
-PUBLIC_BASE_URL = os.getenv("RENDER_EXTERNAL_URL", os.getenv("PUBLIC_BASE_URL", "")).rstrip("/")
+# ─────────────────────────────────────────────────────────────
+# Инициализация
+# ─────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("bot")
 
-# ── aiogram ──────────────────────────────────────────────────────────
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
-router = Router()
-dp.include_router(router)
+bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp  = Dispatcher()
 
-# ── хендлеры ─────────────────────────────────────────────────────────
-@router.message(CommandStart())
-async def start_cmd(m: Message):
-    await m.answer(
-        "👋 Привет! Бот на Render работает через webhook.\n"
-        "Отправь мне сообщение — я повторю его."
-    )
-
-@router.message()
-async def echo(m: Message):
-    # простое эхо, чтобы видеть, что бот жив
-    await m.answer(f"Ты написал: <code>{m.text}</code>")
-
-# ── FastAPI ──────────────────────────────────────────────────────────
 app = FastAPI()
 
-@app.get("/health")
-async def health():
-    return PlainTextResponse("ok")
 
-@app.post(f"/webhook/{{secret}}")
-async def telegram_webhook(secret: str, request: Request):
-    if secret != WEBHOOK_SECRET:
-        # чужие запросы отбрасываем
-        raise HTTPException(status_code=403, detail="forbidden")
-
-    data = await request.json()
-    update = Update.model_validate(data)
-    await dp.feed_update(bot, update)
-    return JSONResponse({"ok": True})
-
-# ── управление вебхуком при старте/остановке ────────────────────────
-async def set_webhook():
-    if not PUBLIC_BASE_URL:
-        print("WARNING: PUBLIC_BASE_URL/RENDER_EXTERNAL_URL не задан — вебхук не ставим.")
-        return
-    url = f"{PUBLIC_BASE_URL}/webhook/{WEBHOOK_SECRET}"
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            json={"url": url, "allowed_updates": ["message"], "drop_pending_updates": False},
-        )
-        print("setWebhook:", r.text)
-
-async def delete_webhook():
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-        print("deleteWebhook:", r.text)
-
-@app.on_event("startup")
-async def on_startup():
-    await set_webhook()
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    await delete_webhook()
+# ─────────────────────────────────────────────────────────────
+# Хэндлеры
+# ─────────────────────────────────────────────────────────────
+@dp.message(CommandStart())
+async def start_cmd(m: Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Открыть меню", callback_data="menu")
+    ]])
+    text = (
+        "👋 Привет! Бот подключён через webhook.\n"
+        "Используй /menu, чтобы открыть меню."
