@@ -1,87 +1,66 @@
 import os
-import logging
-from contextlib import suppress
+from fastapi import FastAPI, Request
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+TOKEN = os.getenv("BOT_TOKEN")  # токен бота из BotFather
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "super_secret")  # можешь оставить дефолт
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Update, Message, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.exceptions import TelegramForbiddenError
-
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "super_secret_dominus")
-
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
-
-WEBHOOK_PATH = f"/webhook/{WEBHOOK_SECRET}"
-WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}" if BASE_URL else None
-
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("bot")
-
-bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 app = FastAPI()
 
+
+# --- Команда /start ---
 @dp.message(CommandStart())
-async def start_cmd(m: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть меню", callback_data="menu")]
-    ])
-    text = "👋 Привет! Бот подключён через webhook.\nИспользуй /menu, чтобы открыть меню."
-    with suppress(TelegramForbiddenError):
-        await m.answer(text, reply_markup=kb)
+async def start_cmd(m: types.Message):
+    await m.answer("👋 Привет! Бот работает через Render.\nОтправь сообщение — я повторю его.")
 
-@dp.message(Command("menu"))
-async def menu_cmd(m: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Анкеты: принятые (0)", callback_data="accepted")],
-        [InlineKeyboardButton(text="Анкеты: новые (0)", callback_data="new")],
-    ])
-    with suppress(TelegramForbiddenError):
-        await m.answer("Главное меню:", reply_markup=kb)
 
-@dp.callback_query(F.data == "menu")
-async def cb_menu(call):
-    await menu_cmd(call.message)
-    with suppress(TelegramForbiddenError):
-        await call.answer()
-
+# --- Просто эхо, пока не подключим анкету ---
 @dp.message()
-async def fallback(m: Message):
-    with suppress(TelegramForbiddenError):
-        await m.answer("Не понял команду. Попробуй /menu.")
+async def echo(m: types.Message):
+    await m.answer(f"Ты написал: {m.text}")
 
-@app.get("/healthz")
-async def healthz():
+
+# --- Вебхук ---
+@app.post(f"/webhook/{WEBHOOK_SECRET}")
+async def telegram_webhook(request: Request):
+    update = types.Update.model_validate(await request.json(), context={"bot": bot})
+    await dp.feed_update(bot, update)
     return {"ok": True}
 
-@app.post(WEBHOOK_PATH)
-async def telegram_webhook(request: Request):
-    try:
-        data = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-    update = Update.model_validate(data, strict=False)
-    await dp.feed_update(bot, update)
-    return JSONResponse({"ok": True})
 
-@app.on_event("startup")
-async def on_startup():
-    if WEBHOOK_URL:
-        log.info("Setting webhook to %s", WEBHOOK_URL)
-        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-    else:
-        log.warning("BASE_URL is empty, webhook will not be set.")
+# --- Пример отправки анкеты в канал ---
+async def send_form_to_channel(form_data: dict):
+    """
+    form_data = {
+        "fio": "Иванов Иван",
+        "birthdate": "01.01.1990",
+        "age": "34",
+        "phone": "+79991234567",
+        "telegram": "@example",
+        "address": "г. Москва, ул. Ленина 1",
+        "skills": "Касса, работа с клиентами",
+        "motivation": "Хочу работать у вас"
+    }
+    """
+    text = (
+        f"📋 Новая анкета кандидата\n\n"
+        f"👤 ФИО: {form_data.get('fio')}\n"
+        f"🎂 Дата рождения: {form_data.get('birthdate')} (возраст: {form_data.get('age')})\n"
+        f"📞 Телефон: {form_data.get('phone')}\n"
+        f"💬 Telegram: {form_data.get('telegram')}\n"
+        f"🏠 Адрес: {form_data.get('address')}\n"
+        f"🛠 Навыки: {form_data.get('skills')}\n"
+        f"✨ Мотивация: {form_data.get('motivation')}\n"
+    )
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    with suppress(Exception):
-        await bot.delete_webhook(drop_pending_updates=False)
-    with suppress(Exception):
-        await bot.session.close()
+    # ⚠️ Вот здесь указываем твой id или канал:
+    await bot.send_message("@dominusfire", text)
+
+
+# --- Тестовый пинг ---
+@app.get("/")
+async def ping():
+    return {"ok": True}
